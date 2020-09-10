@@ -1,0 +1,250 @@
+import pandas as pd
+
+configfile: 'config/config.yml'
+
+
+# three lists -- set of all training, set of all subj with dti, and list of failedsubjects
+# intersection of training and dti, removing the failed subjects
+df_training = pd.read_table('config/participants_training.tsv')
+df_withdti = pd.read_table('config/participants_withdti.tsv')
+df_failedunfold = pd.read_table('config/participants_failedunfold.tsv')
+
+#intersect
+df = pd.merge(df_training,df_withdti,how ='inner', on = ['participant_id'])
+#remove failed
+df = pd.concat([df,df_failedunfold]).drop_duplicates(keep=False)
+
+#write the final participants list to results
+df.to_csv('results/participants.tsv',sep='\t')
+
+
+subjects = df.participant_id.to_list() 
+subjects = [ s.strip('sub-') for s in subjects ]
+
+
+#used the following to get failed subjects -- likely there is a better way using --summary??
+#print('num of subjects: {}'.format(len(subjects)))
+#from glob import glob
+#for s in subjects:
+#   if len(glob(f'results/hippunfold/sub-{s}')) == 0:
+#        print(f'sub-{s}') 
+
+
+
+wildcard_constraints:
+    subject="[a-zA-Z0-9]+",
+    session="[a-zA-Z0-9]+",
+    suffix="[a-zA-Z0-9]+",
+
+dtifit_suffixes = ['FA','MD','S0','MO','L1','L2','L3','V1','V2','V3']
+
+
+subj_dict = config['subj_dict']
+subj_wildcards = { key: f'{{{key}}}' for key in subj_dict.keys()}
+
+
+
+include: 'rules/common.smk'
+
+
+#this is needed to avoid cyclic exceptions but still allow the generic flip and unflip rules to exist
+ruleorder:  get_ref_t2w > get_niftynet_lbls > resample_to_cor_obl > flip_Lnoflip_L > unflip_L_Lnoflip 
+
+rule all_qc:
+    input:  expand('training_data_b1000/qc/{ext}/hcp_{subject}_hemi-{hemi}_overlay.{ext}',subject=subjects,hemi=['L','R'],ext=['png','html'])
+        
+
+rule all_tar:
+    input: 'training_data_b1000.tar'
+
+rule all_b1000:
+    input:
+        shell_avgs = expand(bids(root='results',suffix='{suffix}.nii.gz',hemi='{hemi}',space='coronaloblique',**subj_wildcards),subject=subjects, hemi=['L','R'],suffix='b1000'),
+
+rule all_dwi:
+    input: 
+        shell_avgs = expand(bids(root='results',suffix='{suffix}.nii.gz',hemi='{hemi}',space='coronaloblique',**subj_wildcards),subject=subjects, hemi=['Lnoflip','L','R'],suffix=config['shells']),
+        dtifit_scalars = expand(bids(root='results',suffix='{suffix}.nii.gz',hemi='{hemi}',space='coronaloblique',desc='dtifit',**subj_wildcards),subject=subjects, hemi=['Lnoflip','L','R'],suffix=config['dtifit_scalars'])
+
+    
+
+rule run_hippunfold_T2w:
+    input: 
+        bids = '/project/6050199/akhanf/ext-bids/hcp1200_3T/bids',
+        container = config['singularity']['hippunfold']
+    params:
+        out_root = 'results/hippunfold',
+        participant_label = '{subject}',
+    output:
+        out_dir = directory('results/hippunfold/sub-{subject}'),
+        xfm = 'results/hippunfold/sub-{subject}/sub2coronalOblique.txt',
+        img = expand('results/hippunfold/sub-{subject}/hemi-{hemi}/img.nii.gz',hemi=['Lnoflip','L','R'],allow_missing=True),
+        niftynet_lbl = expand('results/hippunfold/sub-{subject}/hemi-{hemi}/niftynet_lbl.nii.gz',hemi=['L','R'],allow_missing=True)
+    threads: 8
+    resources:
+        mem_mb = 32000,
+        time = 180 #3 hrs
+    group: 'postunfold'
+    shell: 'singularity run {input.container}  {input.bids} {params.out_root} participant --participant_label={params.participant_label}' 
+
+
+
+rule get_cor_obl_xfm:
+    input: 'results/hippunfold/sub-{subject}/sub2coronalOblique.txt',
+    output: bids(root='results',suffix='xfm.txt',from_='orig',to='coronaloblique',type_='itk',**subj_wildcards)
+    group: 'postunfold'
+    shell: 'cp {input} {output}'
+
+rule get_niftynet_lbls:
+    input: 'results/hippunfold/sub-{subject}/hemi-{hemi}/niftynet_lbl.nii.gz'
+    output: bids(root='results',hemi='{hemi,L|R}',suffix='dseg.nii.gz',desc='niftynet',space='coronaloblique',**subj_wildcards)
+    group: 'postunfold'
+    shell: 'cp {input} {output}'
+
+rule get_ref_t2w:
+    input:  'results/hippunfold/sub-{subject}/hemi-{hemi}/img.nii.gz'
+    output: bids(root='results',hemi='{hemi}',suffix='T2w.nii.gz',space='coronaloblique',**subj_wildcards)
+    group: 'postunfold'
+    shell: 'cp {input} {output}'
+
+rule import_dwi:
+    input: config['in_dwi_nii'],
+    output:  bids(root='results',suffix='dwi.nii.gz',**subj_wildcards)
+    group: 'postunfold'
+    shell: 'cp {input} {output}'
+
+rule import_bvals:
+    input: config['in_dwi_bval'],
+    output:  bids(root='results',suffix='dwi.bval',**subj_wildcards)
+    group: 'postunfold'
+    shell: 'cp {input} {output}'
+
+rule import_bvecs:
+    input: config['in_dwi_bvec'],
+    output:  bids(root='results',suffix='dwi.bvec',**subj_wildcards)
+    group: 'postunfold'
+    shell: 'cp {input} {output}'
+
+rule import_mask:
+    input: config['in_dwi_mask'],
+    output:  bids(root='results',desc='brain',suffix='mask.nii.gz',**subj_wildcards)
+    group: 'postunfold'
+    shell: 'cp {input} {output}'
+
+
+rule import_grad_dev:
+    input: config['in_dwi_grad_dev'],
+    output:  bids(root='results',suffix='dwi.grad_dev.nii.gz',**subj_wildcards)
+    group: 'postunfold'
+    shell: 'cp {input} {output}'
+
+
+rule get_shells_from_bvals:
+    input:  bids(root='results',suffix='dwi.bval',**subj_wildcards)
+    output: bids(root='results',suffix='dwi.shells.json',**subj_wildcards)
+    group: 'postunfold'
+    script:
+        'scripts/get_shells_from_bvals.py'
+ 
+rule get_shell_avg:
+    input:
+        dwi = bids(root='results',suffix='dwi.nii.gz',**subj_wildcards),
+        shells =  bids(root='results',suffix='dwi.shells.json',**subj_wildcards)
+    params:
+        bval = '{shell}'
+    output:
+        avgshell =  bids(root='results',suffix='b{shell}.nii.gz',**subj_wildcards),
+    group: 'postunfold'
+    threads: 8
+    resources:
+        mem_mb = 32000,
+    script:
+        'scripts/get_shell_avg.py'
+
+rule resample_to_cor_obl:
+    input:
+        in_dir = 'results/hippunfold/sub-{subject}',
+        xfm = bids(root='results',suffix='xfm.txt',from_='orig',to='coronaloblique',type_='itk', **subj_wildcards),
+        in_img = bids(root='results',suffix='{filename}.nii.gz',**subj_wildcards),
+        ref = bids(root='results',hemi='{hemi}',suffix='T2w.nii.gz',space='coronaloblique',**subj_wildcards)
+    output:
+        out_img = bids(root='results',suffix='{filename}.nii.gz',hemi='{hemi,Lnoflip|R}',space='coronaloblique',**subj_wildcards),
+    container: config['singularity']['ants']
+    group: 'postunfold'
+    shell:
+        'antsApplyTransforms -d 3 --interpolation BSpline -i {input.in_img} -o {output.out_img}  -r {input.ref} -t {input.xfm}'
+
+#generic rule for doing Lnoflip -> L (flip) on b{shell}
+rule flip_Lnoflip_L:
+    input: bids(root='results',hemi='Lnoflip',space='coronaloblique',suffix='{filename}.nii.gz',**subj_wildcards)
+    output: bids(root='results',hemi='L',space='coronaloblique',suffix='{filename}.nii.gz',**subj_wildcards),
+    container: config['singularity']['prepdwi']
+    group: 'postunfold'
+    shell:
+        'c3d -verbose {input} -flip x -o {output}'
+    
+   
+#generic rule for doing unflip (L -> Lnoflip) on dseg 
+rule unflip_L_Lnoflip:
+    input: bids(root='results',hemi='L',space='coronaloblique',suffix='{filename}.nii.gz',**subj_wildcards)
+    output: bids(root='results',hemi='Lnoflip',space='coronaloblique',suffix='{filename}.nii.gz',**subj_wildcards),
+    container: config['singularity']['prepdwi']
+    group: 'postunfold'
+    shell:
+        'c3d -verbose {input} -flip x -o {output}'
+
+#perform dti fitting on hcp data
+rule dtifit:
+    input:
+        dwi = bids(root='results',suffix='dwi.nii.gz',**subj_wildcards),
+        grad_dev = bids(root='results',suffix='dwi.grad_dev.nii.gz',**subj_wildcards),
+        bval = bids(root='results',suffix='dwi.bval',**subj_wildcards),
+        bvec = bids(root='results',suffix='dwi.bvec',**subj_wildcards),
+        mask = bids(root='results',desc='brain',suffix='mask.nii.gz',**subj_wildcards),
+    params:
+        out_prefix = bids(root='results',desc='dtifit',**subj_wildcards)
+    output:
+        niftis = expand(bids(root='results',desc='dtifit',suffix='{suffix}.nii.gz',**subj_wildcards),
+                            suffix=dtifit_suffixes, allow_missing=True)
+    container: config['singularity']['prepdwi']
+    group: 'postunfold'
+    shell: 'dtifit --data={input.dwi} --out={params.out_prefix} --mask={input.mask} --bvecs={input.bvec} --bvals={input.bval} --gradnonlin={input.grad_dev} --verbose'
+
+
+rule qc_dseg:
+    input:
+        img =  'training_data_b1000/hcp_{subject}_hemi-{hemi}_img.nii.gz',
+        seg =  'training_data_b1000/hcp_{subject}_hemi-{hemi}_lbl.nii.gz'
+    output:
+        png = report('training_data_b1000/qc/png/hcp_{subject}_hemi-{hemi}_overlay.png',
+                caption='reports/segqc.rst',
+                category='niftynet b1000 QC'),
+        html = 'training_data_b1000/qc/html/hcp_{subject}_hemi-{hemi}_overlay.html',
+    group: 'preproc'
+    script: 'scripts/vis_qc_dseg.py'
+
+
+
+
+rule export_training_labels:
+    input: 'results/hippunfold/sub-{subject}/hemi-{hemi}/niftynet_lbl.nii.gz'
+    output: 'training_data_b1000/hcp_{subject}_hemi-{hemi}_lbl.nii.gz'
+    group: 'postunfold'
+    shell: 'cp {input} {output}'
+
+#ensures geom of label and image are the same (can be diff if flipped by a different approach)..
+rule export_training_b1000:
+    input: 
+        img = bids(root='results',hemi='{hemi}',space='coronaloblique',suffix='b1000.nii.gz',**subj_wildcards),
+        lbl = 'training_data_b1000/hcp_{subject}_hemi-{hemi}_lbl.nii.gz'
+    output: 
+        img = 'training_data_b1000/hcp_{subject}_hemi-{hemi}_img.nii.gz'
+    group: 'postunfold'
+    container: config['singularity']['prepdwi']
+    shell: 'cp {input.img} {output.img} && fslcpgeom {input.lbl} {output.img}'
+
+rule tar_training:
+    input: expand('training_data_b1000/hcp_{subject}_hemi-{hemi}_{imtype}.nii.gz',subject=subjects,hemi=['L','R'],imtype=['img','lbl'])
+    output: 'training_data_b1000.tar'
+    shell: 'tar -cvf {output} {input}'
+    

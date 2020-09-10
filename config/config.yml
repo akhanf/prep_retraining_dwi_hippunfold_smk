@@ -1,0 +1,42 @@
+
+singularity:
+  prepdwi: '/project/6050199/akhanf/singularity/bids-apps/khanlab_prepdwi_latest.sif'  #should use mrtrix3.0 container instead
+  ants: '/project/6050199/akhanf/singularity/ants-v2.3.1.sif'
+  fsl: '/project/6050199/akhanf/singularity/bids-apps/fsl_6.0.3_cuda9.1.sif' 
+  hippunfold: '/project/6050199/akhanf/singularity/bids-apps/khanlab_hippunfold_latest.sif'
+
+
+in_dwi_nii: '/project/6050199/ext-data/hcp1200/HCP_1200_T1w_Diffusion_FS/{subject}/T1w/Diffusion/data.nii.gz'
+in_dwi_bval: '/project/6050199/ext-data/hcp1200/HCP_1200_T1w_Diffusion_FS/{subject}/T1w/Diffusion/bvals'
+in_dwi_bvec: '/project/6050199/ext-data/hcp1200/HCP_1200_T1w_Diffusion_FS/{subject}/T1w/Diffusion/bvecs'
+in_dwi_grad_dev: '/project/6050199/ext-data/hcp1200/HCP_1200_T1w_Diffusion_FS/{subject}/T1w/Diffusion/grad_dev.nii.gz'
+in_dwi_mask: '/project/6050199/ext-data/hcp1200/HCP_1200_T1w_Diffusion_FS/{subject}/T1w/Diffusion/nodif_brain_mask.nii.gz'
+
+
+subj_dict:
+ subject:   
+  - '0015'
+
+participants_tsv: 'config/participants_training_withdti.tsv'
+
+shells:
+  - 'b0'
+  - 'b1000'
+  - 'b2000'
+  - 'b3000'
+
+
+dtifit_scalars:
+  - 'FA'
+  - 'MD'
+  - 'S0'
+  - 'MO' 
+  - 'L1' 
+  - 'L2' 
+  - 'L3'
+
+dtifit_vectors:
+  - 'V1' 
+  - 'V2' 
+  - 'V3'
+
